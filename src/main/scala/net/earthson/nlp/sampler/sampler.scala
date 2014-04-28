@@ -3,14 +3,14 @@ package net.earthson.nlp.sampler
 import scala.util.Random
 
 object MultiSampler {
-    def multisampling(l: List[Double]) = {
+    def multisampling(l: Array[Double]) = {
         val r = l.sum * Random.nextFloat
-        def loop(i:Int, rd:Double, sq:List[Double]):Int  = {
-            sq match {
-                case Nil => 0
-                case h::t => if (rd <= h) i else loop(i+1, rd-h, t)
+        def loop(i:Int, rd:Double):Int  = {
+            i match {
+                case 0 => 0
+                case x => if (rd <= l(i)) i else loop(i-1, rd-l(i))
             }
-            }
-        loop(0, r, l)
+        }
+        loop(l.size-1, r)
     }
 }

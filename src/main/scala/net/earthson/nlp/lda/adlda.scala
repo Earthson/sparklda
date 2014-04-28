@@ -19,6 +19,7 @@ object GibbsMapper {
         val nz = mutable.Map(topicinfo.nz:_*).withDefaultValue(0)
         val nmz = mutable.Map(mwz.groupBy(x=>(x._1, x._3)).mapValues(_.size).toSeq:_*).withDefaultValue(0)
         val nm = mutable.Map(nmz.toSeq.map(x=>(x._1._1, x._2)).groupBy(_._1).mapValues(_.map(_._2).sum).toSeq:_*).withDefaultValue(0)
+        val probz = new Array[Double](ntopics)
         for(r <- 1 to round) {
             printf("Iteration: %d\n", r)
             for(i <- 0 until mwzbuf.size) {
@@ -27,8 +28,8 @@ object GibbsMapper {
                 nz(cz) -= 1
                 nmz((cm,cz)) -= 1
                 //nm(cm) -= 1
-                val probz = for(z <- 0 until ntopics) yield ((nzw((z,cw))+beta)/(nz(z)+nterms*beta))*(nmz((cm,z))+alpha)
-                val newz = MultiSampler.multisampling(probz.toList)
+                for(z <- 0 until ntopics) probz(z) = ((nzw((z,cw))+beta)/(nz(z)+nterms*beta))*(nmz((cm,z))+alpha)
+                val newz = MultiSampler.multisampling(probz)
                 mwzbuf(i) = (cm, cw, newz)
                 nzw((newz,cw)) += 1
                 nz(newz) += 1
