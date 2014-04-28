@@ -36,7 +36,11 @@ object ADLDAJob {
     def main(args: Array[String]) {
         val spark = initspark("AD-LDA Testing")
         val file = spark.textFile("hdfs://ns1/nlp/lda/wiki.tuple3")
-        val adldamodel = lda.ADLDAModel(spark, file, ntopics)
+        val ldardd = file.map(x=>{
+                val tmp = x.substring(1, x.length-1).split(",")
+                (tmp(0).toLong, tmp(1), tmp(2).toInt)
+            })
+        val adldamodel = new lda.ADLDAModel(spark, ldardd, ntopics)
         adldamodel.train(100)
         spark.stop()
     }
