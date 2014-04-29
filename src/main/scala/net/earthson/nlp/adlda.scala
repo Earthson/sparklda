@@ -14,7 +14,6 @@ class MyRegistrator extends KryoRegistrator {
         kryo.register(classOf[Map[String,Long]])
         kryo.register(classOf[Seq[(String,Long)]])
         kryo.register(classOf[Seq[(String,Int)]])
-        kryo.register(classOf[lda.TopicInfo])
     }
 }
 
@@ -28,22 +27,21 @@ object ADLDAJob {
                     .setJars(SparkContext.jarOfClass(this.getClass))
                     .set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
                     //.set("spark.closure.serializer", "org.apache.spark.serializer.KryoSerializer")
-                    .set("spark.kryoserializer.buffer.mb", "64")
+                    .set("spark.kryoserializer.buffer.mb", "512")
                     .set("spark.kryo.registrator", "net.earthson.nlp.MyRegistrator")
                     .set("spark.cores.max", "30")
                     .set("spark.default.parallelism", "30")
                     .set("spark.executor.memory", "4g")
         new SparkContext(conf)
     }
+
     def main(args: Array[String]) {
         val spark = initspark("AD-LDA Testing")
-        val file = spark.textFile("hdfs://ns1/nlp/lda/wiki.tuple3.10000", 20)
-        val ldardd = file.map(x=>{
-                val tmp = x.substring(1, x.length-1).split(",")
-                (tmp(0).toLong, tmp(1), tmp(2).toInt)
-            })
-        val adldamodel = new lda.ADLDAModel(ntopics, ldardd)
-        adldamodel.train(spark, ldardd, 100)
+        val adldamodel = new lda.ADLDAModel(ntopics, "hdfs://ns1/nlp/lda/wiki.tuple3.10000", spark)
+        val tpinfo = adldamodel.train(round=20)
+        for((tp, tpw) <- lda.LDAInfo.topWords(tpinfo)) {
+            printf("%d\t:\t%s\n", tp, tpw.take(20).map(_._1).mkString(sep="\t"))
+        }
         spark.stop()
     }
 }
