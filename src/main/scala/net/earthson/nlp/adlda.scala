@@ -38,7 +38,7 @@ object ADLDAJob {
     def main(args: Array[String]) {
         val spark = initspark("AD-LDA Testing")
         val adldamodel = new lda.ADLDAModel(ntopics, "hdfs://ns1/nlp/lda/wiki.tuple3.10000", spark)
-        val tpinfo = adldamodel.train(round=20)
+        val tpinfo = adldamodel.train(round=50, innerRound=10)
         for((tp, tpw) <- lda.LDAInfo.topWords(tpinfo)) {
             printf("%d\t:\t%s\n", tp, tpw.take(20).map(_._1).mkString(sep="\t"))
         }

@@ -73,13 +73,13 @@ class ADLDAModel(val ntopics:Int, val datapath:String, val sc:SparkContext) {
                 (tmp(0).toLong, tmp(1), tmp(2).toInt)
             })
 
-    def train(round:Int, innerRound:Int = 20, saveStep:Int = 5):TopicInfo = {
+    def train(round:Int, innerRound:Int = 20):TopicInfo = {
         val minfo = this.sc broadcast this.modelinfo
-        fromFile(this.datapath).saveAsTextFile(s"hdfs://ns1/nlp/lda/solution.round.1")
+        fromFile(this.datapath).saveAsTextFile(s"hdfs://ns1/nlp/lda/solution.round.0")
         println("Training Start!") //DEBUG
         def loop(i:Int) {
             print(s"Round ${i}")
-            val mwz = fromFile(s"hdfs://ns1/nlp/lda/solution.round.${i}")
+            val mwz = fromFile(s"hdfs://ns1/nlp/lda/solution.round.${i-1}")
             val tinfo = this.sc broadcast LDAInfo.topicInfo(mwz)
             val ans = mwz.mapPartitions(it=>GibbsMapper.mapper(minfo.value, tinfo.value, it.toSeq, innerRound).toIterator, preservesPartitioning=true)
             ans.saveAsTextFile(s"hdfs://ns1/nlp/lda/solution.round.${i}")
