@@ -1,5 +1,13 @@
 package net.earthson.nlp.lda
 
+import scala.annotation.tailrec
+
+import org.apache.spark.rdd.RDD
+import org.apache.spark.rdd
+import org.apache.spark.SparkContext
+import org.apache.spark.SparkContext._
+import org.apache.spark.Logging
+
 import scala.collection.mutable
 import net.earthson.nlp.sampler.MultiSampler
 
@@ -11,8 +19,32 @@ class ModelInfo(val ntopics:Int, val nterms:Int) {
 
 class TopicInfo(val nzw:Seq[((Int,String),Long)], val nz:Seq[(Int, Long)]) extends Serializable{}
 
-object GibbsMapper {
-    def mapper(modelInfo: ModelInfo, topicinfo:TopicInfo, mwz:Seq[(Long,String,Int)], round:Int) = {
+
+object LDA {
+    type LDADataRDD = RDD[(Long,String,Int)]
+
+    def topicInfo(mwz:LDA.LDADataRDD) = {
+        val nzw = new rdd.PairRDDFunctions(mwz.map(x=>((x._3, x._2),1L))).reduceByKey(_+_).map(x=>(x._1,x._2)).collect.toSeq
+        val nz = nzw.map(x=>(x._1._1, x._2)).groupBy(_._1).mapValues(_.map(_._2).sum.toLong).toSeq
+        new TopicInfo(nzw, nz) 
+    }
+
+    def fromFile(sc:SparkContext, datapath:String, npart:Int = 100):LDADataRDD = {
+        sc.textFile(datapath, npart).map(x=>{
+                val tmp = x.split("\t")
+                (tmp(0).toLong, tmp(1), tmp(2).toInt)
+            })
+    }
+
+    def toFile(mwz:LDADataRDD, datapath:String) {
+        mwz.saveAsTextFile(datapath)
+    }
+
+    def topWords(tinfo:TopicInfo, limit:Int = 20):Seq[(Int, Seq[(String, Long)])] = {
+        tinfo.nzw.groupBy(_._1._1).map(x=>(x._1,x._2.map(y=>(y._1._2, y._2)).toSeq.sortBy(_._2).reverse)).toSeq.sortBy(_._1)
+    }
+
+    def gibbsMapper(modelInfo: ModelInfo, topicinfo:TopicInfo, mwz:Seq[(Long,String,Int)], round:Int) = {
         import modelInfo._
         println("mapping")
         val mwzbuf = mwz.toBuffer
@@ -40,57 +72,39 @@ object GibbsMapper {
         }
         mwzbuf.toSeq
     }
-
 }
 
-
-import org.apache.spark.rdd
-import org.apache.spark.SparkContext
-
-object LDAInfo {
-    type LDAData = rdd.RDD[(Long,String,Int)]
-
-    def topicInfo(mwz:LDAInfo.LDAData) = {
-        val nzw = new rdd.PairRDDFunctions(mwz.map(x=>((x._3, x._2),1L))).reduceByKey(_+_).map(x=>(x._1,x._2)).collect.toSeq
-        val nz = nzw.map(x=>(x._1._1, x._2)).groupBy(_._1).mapValues(_.map(_._2).sum.toLong).toSeq
-        new TopicInfo(nzw, nz) 
-    }
-
-    def topWords(tinfo:TopicInfo, limit:Int = 20):Seq[(Int, Seq[(String, Long)])] = {
-        tinfo.nzw.groupBy(_._1._1).map(x=>(x._1,x._2.map(y=>(y._1._2, y._2)).toSeq.sortBy(_._2).reverse)).toSeq.sortBy(_._1)
-    }
-}
-
-class ADLDAModel(val ntopics:Int, val sc:SparkContext, val datapath:String, val npartition:Int=100) {
+class ADLDA(
+        val ntopics:Int,
+        val nterms:Int, 
+        val npartition:Int=100) 
+    extends Serializable with Logging
+{
     //TODO: flexible save location and input location
     //TODO: Add Perplexity
 
-    val nterms = fromFile(datapath).map(_._2).distinct.count.toInt
-    val modelinfo = new ModelInfo(ntopics, nterms)
+    //private val nterms = fromFile(datapath).map(_._2).distinct.count.toInt
+    private val modelinfo = new ModelInfo(ntopics, nterms)
 
-    def fromFile(datapath:String, npart:Int=npartition) = sc.textFile(datapath, npart).map(x=>{
-                val tmp = x.substring(1, x.length-1).split(",")
-                (tmp(0).toLong, tmp(1), tmp(2).toInt)
-            })
-
-    def train(round:Int, innerRound:Int = 20):TopicInfo = {
-        val minfo = this.sc broadcast this.modelinfo
-        fromFile(this.datapath).saveAsTextFile(s"hdfs://ns1/nlp/lda/solution.round.0")
-        println("Training Start!") //DEBUG
-        def loop(i:Int) {
-            println(s"Round ${i}")
-            val mwz = fromFile(s"hdfs://ns1/nlp/lda/solution.round.${i-1}", npartition*2)
-            val tinfo = this.sc broadcast LDAInfo.topicInfo(mwz)
-            val ans = mwz.mapPartitions(it=>GibbsMapper.mapper(minfo.value, tinfo.value, it.toSeq, innerRound).toIterator, preservesPartitioning=true)
-            ans.saveAsTextFile(s"hdfs://ns1/nlp/lda/solution.round.${i}")
-            if (i < round) loop(i+1)
+    def train(imwz:LDA.LDADataRDD, round:Int, innerRound:Int = 20):LDA.LDADataRDD = {
+        val mwzToRun = if (imwz.partitions.size >= this.npartition) imwz else imwz.repartition(this.npartition)
+        val minfo = mwzToRun.sparkContext broadcast this.modelinfo
+        @tailrec def loop(i:Int, mwz:LDA.LDADataRDD):LDA.LDADataRDD = {
+            if(i == round) mwz
+            else {
+                val tinfo = mwz.sparkContext broadcast LDA.topicInfo(mwz)
+                val mwzNew = mwz.mapPartitions(
+                        it=>LDA.gibbsMapper(minfo.value, tinfo.value, it.toSeq, innerRound).toIterator, 
+                        preservesPartitioning=true)
+                    .persist
+                loop(i+1, mwzNew)
+            }
         }
-        loop(1)
-        LDAInfo.topicInfo(fromFile(s"hdfs://ns1/nlp/lda/solution.round.${round}"))
+        loop(1, mwzToRun)
     }
 }
 
-class LDAModel(var mwz:Seq[(Long,String,Int)], val ntopics:Int) {
+class LDALocal(var mwz:Seq[(Long,String,Int)], val ntopics:Int) {
     //TODO: Add Perplexity
 
     val nterms = Set(mwz.map(_._2):_*).size
@@ -101,7 +115,7 @@ class LDAModel(var mwz:Seq[(Long,String,Int)], val ntopics:Int) {
     def tinfo = new TopicInfo(this.nzw, this.nz)
     
     def train(round:Int) {
-        this.mwz = GibbsMapper.mapper(this.modelinfo, this.tinfo, this.mwz, round)
+        this.mwz = LDA.gibbsMapper(this.modelinfo, this.tinfo, this.mwz, round)
     }
 
     def twords(limit:Int) = {

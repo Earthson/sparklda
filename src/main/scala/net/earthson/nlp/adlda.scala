@@ -6,7 +6,6 @@ import SparkContext._
 import scala.io.Source
 import com.esotericsoftware.kryo.Kryo
 import org.apache.spark.serializer.KryoRegistrator
-import net.earthson.nlp.lda
 
 class MyRegistrator extends KryoRegistrator {
     override def registerClasses(kryo: Kryo) {
@@ -38,9 +37,12 @@ object ADLDAJob {
 
     def main(args: Array[String]) {
         val spark = initspark("AD-LDA Testing")
-        val adldamodel = new lda.ADLDAModel(ntopics, sc=spark, datapath="hdfs://ns1/nlp/lda/wiki.tuple3.10000")
-        val tpinfo = adldamodel.train(round=10, innerRound=5)
-        for((tp, tpw) <- lda.LDAInfo.topWords(tpinfo)) {
+        val ldaData = lda.LDA.fromFile(spark, "hdfs://ns1/nlp/lda/wiki.tuple3.10000")
+        val nterms = ldaData.map(_._2).distinct.count.toInt
+        val adldaModel = new lda.ADLDA(64, nterms, 100)
+        val ldaSolution = adldaModel.train(ldaData, round=10, innerRound=5)
+        val topicInfo = lda.LDA.topicInfo(ldaSolution)
+        for((tp, tpw) <- lda.LDA.topWords(topicInfo)) {
             printf("%d\t:\t%s\n", tp, tpw.take(20).map(_._1).mkString(sep="\t"))
         }
         spark.stop()
