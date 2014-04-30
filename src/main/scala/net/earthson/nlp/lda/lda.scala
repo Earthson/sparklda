@@ -61,14 +61,14 @@ object LDAInfo {
     }
 }
 
-class ADLDAModel(val ntopics:Int, val datapath:String, val sc:SparkContext) {
+class ADLDAModel(val ntopics:Int, val sc:SparkContext, val datapath:String, val npartition:Int=100) {
     //TODO: flexible save location and input location
     //TODO: Add Perplexity
 
     val nterms = fromFile(datapath).map(_._2).distinct.count.toInt
     val modelinfo = new ModelInfo(ntopics, nterms)
 
-    def fromFile(datapath:String) = sc.textFile(datapath, 20).map(x=>{
+    def fromFile(datapath:String, npart:Int=npartition) = sc.textFile(datapath, npart).map(x=>{
                 val tmp = x.substring(1, x.length-1).split(",")
                 (tmp(0).toLong, tmp(1), tmp(2).toInt)
             })
@@ -79,7 +79,7 @@ class ADLDAModel(val ntopics:Int, val datapath:String, val sc:SparkContext) {
         println("Training Start!") //DEBUG
         def loop(i:Int) {
             print(s"Round ${i}")
-            val mwz = fromFile(s"hdfs://ns1/nlp/lda/solution.round.${i-1}")
+            val mwz = fromFile(s"hdfs://ns1/nlp/lda/solution.round.${i-1}", npartition*10)
             val tinfo = this.sc broadcast LDAInfo.topicInfo(mwz)
             val ans = mwz.mapPartitions(it=>GibbsMapper.mapper(minfo.value, tinfo.value, it.toSeq, innerRound).toIterator, preservesPartitioning=true)
             ans.saveAsTextFile(s"hdfs://ns1/nlp/lda/solution.round.${i}")

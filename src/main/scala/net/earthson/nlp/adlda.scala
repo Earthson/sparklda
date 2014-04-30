@@ -27,7 +27,8 @@ object ADLDAJob {
                     .setJars(SparkContext.jarOfClass(this.getClass))
                     .set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
                     //.set("spark.closure.serializer", "org.apache.spark.serializer.KryoSerializer")
-                    .set("spark.kryoserializer.buffer.mb", "512")
+                    .set("spark.kryoserializer.buffer.mb", "128")
+                    .set("spark.akka.frameSize", "128")
                     .set("spark.kryo.registrator", "net.earthson.nlp.MyRegistrator")
                     .set("spark.cores.max", "30")
                     .set("spark.default.parallelism", "30")
@@ -37,7 +38,7 @@ object ADLDAJob {
 
     def main(args: Array[String]) {
         val spark = initspark("AD-LDA Testing")
-        val adldamodel = new lda.ADLDAModel(ntopics, "hdfs://ns1/nlp/lda/wiki.tuple3.10000", spark)
+        val adldamodel = new lda.ADLDAModel(ntopics, sc=spark, datapath="hdfs://ns1/nlp/lda/wiki.tuple3.10000")
         val tpinfo = adldamodel.train(round=50, innerRound=10)
         for((tp, tpw) <- lda.LDAInfo.topWords(tpinfo)) {
             printf("%d\t:\t%s\n", tp, tpw.take(20).map(_._1).mkString(sep="\t"))
