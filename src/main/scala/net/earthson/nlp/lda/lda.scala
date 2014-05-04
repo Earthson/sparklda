@@ -96,7 +96,7 @@ class ADLDA(
                 val mwzNew = mwz.mapPartitions(
                         it=>LDA.gibbsMapper(minfo.value, tinfo.value, it.toSeq, innerRound).toIterator, 
                         preservesPartitioning=true)
-                    .persist
+                    .cache.persist
                 loop(i+1, mwzNew)
             }
         }

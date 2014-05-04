@@ -40,7 +40,7 @@ object ADLDAJob {
         val ldaData = lda.LDA.fromFile(spark, "hdfs://ns1/nlp/lda/wiki.tuple3.10000")
         val nterms = ldaData.map(_._2).distinct.count.toInt
         val adldaModel = new lda.ADLDA(64, nterms, 100)
-        val ldaSolution = adldaModel.train(ldaData, round=10, innerRound=5)
+        val ldaSolution = adldaModel.train(ldaData, round=100, innerRound=10)
         val topicInfo = lda.LDA.topicInfo(ldaSolution)
         for((tp, tpw) <- lda.LDA.topWords(topicInfo)) {
             printf("%d\t:\t%s\n", tp, tpw.take(20).map(_._1).mkString(sep="\t"))
