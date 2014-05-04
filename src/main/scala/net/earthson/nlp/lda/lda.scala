@@ -12,7 +12,7 @@ import scala.collection.mutable
 import net.earthson.nlp.sampler.MultiSampler
 
 
-class ModelInfo(val ntopics:Int, val nterms:Int) {
+class ModelInfo(val ntopics:Int, val nterms:Int) extends Serializable{
     val alpha = ntopics/50.0
     val beta = 0.01
 }
@@ -21,8 +21,8 @@ class TopicInfo(val nzw:Seq[((Int,String),Long)], val nz:Seq[(Int, Long)]) exten
 
 
 object LDA {
-    type LDADataRDD = RDD[Array[(String,Int)]]
-    type LDADoc = Seq[Array[(String,Int)]]
+    type LDADataRDD = RDD[List[(String,Int)]]
+    type LDADoc = Seq[List[(String,Int)]]
 
     def topicInfo(mwz:LDA.LDADataRDD) = {
         val nzw = new rdd.PairRDDFunctions(mwz.flatMap(xl=>xl.map(x=>((x._2,x._1),1L)))).reduceByKey(_+_).collectAsMap.toSeq
@@ -37,7 +37,7 @@ object LDA {
         }
         sc.textFile(datapath, npart).map(xl=> {
             val rd = new scala.util.Random;
-            xl.split("""\s+""").map(w=>if(w contains "/-") readPair(w) else (w, rd.nextInt(ntopics))).toArray
+            xl.split("""\s+""").map(w=>if(w contains "/-") readPair(w) else (w, rd.nextInt(ntopics))).toList
         })
     }
 
@@ -55,8 +55,9 @@ object LDA {
         tinfo.nzw.groupBy(_._1._1).map(x=>(x._1,x._2.map(y=>(y._1._2, y._2)).toSeq.sortBy(_._2).reverse)).toSeq.sortBy(_._1)
     }
 
-    def gibbsMapper(modelInfo: ModelInfo, topicinfo:TopicInfo, mwz:Seq[Array[(String,Int)]], round:Int) = {
+    def gibbsMapper(modelInfo: ModelInfo, topicinfo:TopicInfo, omwz:Seq[List[(String,Int)]], round:Int) = {
         import modelInfo._
+        val mwz = omwz.map(_.toArray)
         val nzw = mutable.Map(topicinfo.nzw:_*).withDefaultValue(0)
         val nz = new Array[Long](ntopics)
         for((z, c) <- topicinfo.nz) nz(z) = c
@@ -83,7 +84,7 @@ object LDA {
                 }
             }
         }
-        mwz
+        mwz.map(_.toList)
     }
 }
 
@@ -93,7 +94,6 @@ class ADLDAModel (
         final val nterms:Int, 
         var data:LDA.LDADataRDD,
         final val npartition:Int=100) 
-    extends Serializable with Logging
 {
     //TODO: flexible save location and input location
     //TODO: Add Perplexity
@@ -104,20 +104,24 @@ class ADLDAModel (
 
     def train(round:Int, innerRound:Int = 20) {
         this.data = if (this.data.partitions.size >= this.npartition) this.data else this.data.repartition(this.npartition)
-        @tailrec def loop(i:Int, mwz:LDA.LDADataRDD):LDA.LDADataRDD = {
-            if(i == round) mwz
+        val minf = this.minfo
+        @tailrec def loop(i:Int, mwz:LDA.LDADataRDD, tpinfo:TopicInfo):(LDA.LDADataRDD, TopicInfo) = {
+            println(s"Round:\t${i}")
+            if(i == round) (mwz, tpinfo)
             else {
-                val tinfo = mwz.sparkContext broadcast LDA.topicInfo(mwz)
+                val tinfo = mwz.sparkContext broadcast tpinfo
                 val mwzNew = mwz.mapPartitions(
-                        it=>LDA.gibbsMapper(minfo, tinfo.value, it.toSeq, innerRound).toIterator, 
+                        it=>LDA.gibbsMapper(minf, tinfo.value, it.toSeq, innerRound).toIterator, 
                         preservesPartitioning=true)
                     .persist
+                val tpinfoNew = LDA.topicInfo(mwzNew)
                 mwz.unpersist(blocking=false)
-                loop(i+1, mwzNew)
+                loop(i+1, mwzNew, tpinfoNew)
             }
         }
-        loop(1, this.data)
-        this.tinfo = LDA.topicInfo(this.data)
+        val (x, y) = loop(1, this.data, this.tinfo)
+        this.data = x
+        this.tinfo = y
     }
 }
 
