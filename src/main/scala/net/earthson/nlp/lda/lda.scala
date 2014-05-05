@@ -118,7 +118,10 @@ class ADLDAModel (
                         it=>LDA.gibbsMapper(minf, tinfo.value, it.toSeq, innerRound).toIterator, 
                                     preservesPartitioning=true)
                     .persist(MEMORY_AND_DISK)
+                mwzNew.checkpoint
+                println(mwzNew.isCheckpointed)
                 val tpinfoNew = LDA.topicInfo(mwzNew)
+                println(mwzNew.isCheckpointed)
                 mwz.unpersist(blocking=true)
                 loop(i+1, mwzNew, tpinfoNew)
             }
