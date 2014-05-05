@@ -30,6 +30,7 @@ object ADLDAJob {
                     .set("spark.akka.frameSize", "128")
                     .set("spark.kryo.registrator", "net.earthson.nlp.MyRegistrator")
                     .set("spark.default.parallelism", "32")
+                    //.set("spark.cleaner.ttl", "3600")
                     //.set("spark.cores.max", "30")
                     //.set("spark.executor.memory", "1g")
         new SparkContext(conf)
@@ -37,11 +38,12 @@ object ADLDAJob {
 
     def main(args: Array[String]) {
         val spark = initspark("AD-LDA Testing")
-        val adldaModel = lda.LDA.loadADLDA(spark, "hdfs://ns1/nlp/lda/wiki.docs.10000", 64)
+        val adldaModel = lda.LDA.loadADLDA(spark, "hdfs://ns1/nlp/lda/wiki.docs.10000", 32)
         adldaModel.train(round=100, innerRound=10)
         for((tp, tpw) <- lda.LDA.topWords(adldaModel.tinfo)) {
             printf("%d\t:\t%s\n", tp, tpw.take(20).map(_._1).mkString(sep="\t"))
         }
+        lda.LDA.toFile(adldaModel.data, "hdfs://ns1/nlp/lda/wiki.10000.lda.1000")
         spark.stop()
     }
 }

@@ -7,6 +7,7 @@ import org.apache.spark.rdd
 import org.apache.spark.SparkContext
 import org.apache.spark.SparkContext._
 import org.apache.spark.Logging
+import org.apache.spark.storage.StorageLevel._
 
 import scala.collection.mutable
 import net.earthson.nlp.sampler.MultiSampler
@@ -21,6 +22,8 @@ class TopicInfo(val nzw:Seq[((Int,String),Long)], val nz:Seq[(Int, Long)]) exten
 
 
 object LDA {
+    //TODO: Add Perplexity
+
     type LDADataRDD = RDD[List[(String,Int)]]
     type LDADoc = Seq[List[(String,Int)]]
 
@@ -42,7 +45,7 @@ object LDA {
     }
 
     def toFile(mwz:LDADataRDD, datapath:String) {
-        mwz.saveAsTextFile(datapath)
+        mwz.map(xl=>xl.map(x=>s"${x._1}/-${x._2}").mkString(sep="\t")).saveAsTextFile(datapath)
     }
 
     def loadADLDA(sc:SparkContext, datapath:String, ntopics:Int, npart:Int = 100):ADLDAModel = {
@@ -55,7 +58,7 @@ object LDA {
         tinfo.nzw.groupBy(_._1._1).map(x=>(x._1,x._2.map(y=>(y._1._2, y._2)).toSeq.sortBy(_._2).reverse)).toSeq.sortBy(_._1)
     }
 
-    def gibbsMapper(modelInfo: ModelInfo, topicinfo:TopicInfo, omwz:Seq[List[(String,Int)]], round:Int) = {
+    def gibbsMapper(modelInfo: ModelInfo, topicinfo:TopicInfo, omwz:Seq[List[(String,Int)]], round:Int, inference:Boolean=false) = {
         import modelInfo._
         val mwz = omwz.map(_.toArray)
         val nzw = mutable.Map(topicinfo.nzw:_*).withDefaultValue(0)
@@ -72,14 +75,18 @@ object LDA {
         for(r <- 1 to round) {
             for((mdoc, docmz) <- mwz zip nmz) {
                 for(((cw, cz), i) <- mdoc.zipWithIndex) {
-                    nzw((cz, cw)) -= 1
-                    nz(cz) -= 1
+                    if (inference == false) {
+                        nzw((cz, cw)) -= 1
+                        nz(cz) -= 1
+                    }
                     docmz(cz) -= 1
                     for(z <- 0 until ntopics) probz(z) = ((nzw((z,cw))+beta)/(nz(z)+nterms*beta))*(docmz(z)+alpha)
                     val newz = MultiSampler.multisampling(probz)
                     mdoc(i) = (cw, newz)
-                    nzw((newz,cw)) += 1
-                    nz(newz) += 1
+                    if (inference == false) {
+                        nzw((newz,cw)) += 1
+                        nz(newz) += 1
+                    }
                     docmz(newz) += 1
                 }
             }
@@ -95,9 +102,6 @@ class ADLDAModel (
         var data:LDA.LDADataRDD,
         final val npartition:Int=100) 
 {
-    //TODO: flexible save location and input location
-    //TODO: Add Perplexity
-
 
     val minfo = new ModelInfo(ntopics, nterms)
     var tinfo = LDA.topicInfo(this.data)
@@ -112,16 +116,24 @@ class ADLDAModel (
                 val tinfo = mwz.sparkContext broadcast tpinfo
                 val mwzNew = mwz.mapPartitions(
                         it=>LDA.gibbsMapper(minf, tinfo.value, it.toSeq, innerRound).toIterator, 
-                        preservesPartitioning=true)
-                    .persist
+                                    preservesPartitioning=true)
+                    .persist(MEMORY_AND_DISK)
                 val tpinfoNew = LDA.topicInfo(mwzNew)
-                mwz.unpersist(blocking=false)
+                mwz.unpersist(blocking=true)
                 loop(i+1, mwzNew, tpinfoNew)
             }
         }
         val (x, y) = loop(1, this.data, this.tinfo)
         this.data = x
         this.tinfo = y
+    }
+
+    def inference(infer:LDA.LDADataRDD, round:Int = 20, npart:Int = 0) = {
+        val todo = if(npart > 0) infer.repartition(npart) else infer
+        val minf = this.minfo
+        val tinfo = infer.sparkContext broadcast this.tinfo
+        infer.mapPartitions(it=>LDA.gibbsMapper(minf, tinfo.value, it.toSeq, round, inference=true).toIterator, 
+                                    preservesPartitioning=true)
     }
 }
 
