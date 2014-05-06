@@ -22,12 +22,11 @@ class TopicInfo(val nzw:Seq[((Int,String),Long)], val nz:Seq[(Int, Long)]) exten
 
 
 object LDA {
-    //TODO: Add Perplexity
 
     type LDADataRDD = RDD[List[(String,Int)]]
     type LDADoc = Seq[List[(String,Int)]]
 
-    def topicInfo(mwz:LDA.LDADataRDD) = {
+    def genTopicInfo(mwz:LDA.LDADataRDD) = {
         val nzw = new rdd.PairRDDFunctions(mwz.flatMap(xl=>xl.map(x=>((x._2,x._1),1L)))).reduceByKey(_+_).collectAsMap.toSeq
         val nz = nzw.map(x=>(x._1._1, x._2)).groupBy(_._1).mapValues(_.map(_._2).sum.toLong).toSeq
         new TopicInfo(nzw, nz) 
@@ -58,19 +57,46 @@ object LDA {
         tinfo.nzw.groupBy(_._1._1).map(x=>(x._1,x._2.map(y=>(y._1._2, y._2)).toSeq.sortBy(_._2).reverse)).toSeq.sortBy(_._1)
     }
 
-    def gibbsMapper(modelInfo: ModelInfo, topicinfo:TopicInfo, omwz:Seq[List[(String,Int)]], round:Int, inference:Boolean=false) = {
-        import modelInfo._
-        val mwz = omwz.map(_.toArray)
-        val nzw = mutable.Map(topicinfo.nzw:_*).withDefaultValue(0)
-        val nz = new Array[Long](ntopics)
-        for((z, c) <- topicinfo.nz) nz(z) = c
-        val nmz = mwz.map(mdoc=>{
+    def genNMZ(mwz:Seq[List[(String,Int)]], ntopics:Int) = {
+        mwz.map(mdoc=>{
                         val marr = new Array[Long](ntopics)
                         for( (w, z) <- mdoc) {
                             marr(z) += 1
                         }
                         marr
                     })
+    }
+
+    def entropySum(modelInfo: ModelInfo, topicInfo:TopicInfo, mwz:Seq[List[(String,Int)]]) = {
+        import modelInfo._
+        val nzw = Map(topicInfo.nzw:_*).withDefaultValue(0L)
+        val nz = new Array[Long](ntopics)
+        for((z,c) <- topicInfo.nz) nz(z) = c
+        def docH(mdoc:List[(String,Int)]) = {
+            val mz = Array.fill(ntopics)(0L)
+            val nm = mz.sum
+            mdoc.foreach(x=>mz(x._2) += 1)
+            def pw(w:String):Double = (0 until ntopics).map(z=> ((nzw((z, w))+beta)/(nz(z)+nterms*beta)*(mz(z)+alpha)/(nm+ntopics*alpha))).sum
+            ((mdoc.map(w => -Math.log(pw(w._1))/Math.log(2)).sum), mdoc.size)
+        }
+        mwz.map(x=>docH(x))
+    }
+
+    def perplexity(modelInfo:ModelInfo, topicInfo:TopicInfo, data:LDADataRDD) = {
+        val tinfo = data.sparkContext broadcast topicInfo
+        val minfo = modelInfo
+        val (eall, tall) = data.mapPartitions(it=>LDA.entropySum(minfo, tinfo.value, it.toSeq).toIterator).reduce((x, y)=>(x._1+y._1, x._2+y._2))
+        val entropy = eall/tall
+        Math.pow(2, entropy)
+    }
+
+    def gibbsMapper(modelInfo: ModelInfo, topicInfo:TopicInfo, omwz:Seq[List[(String,Int)]], round:Int, inference:Boolean=false) = {
+        import modelInfo._
+        val mwz = omwz.map(_.toArray)
+        val nzw = mutable.Map(topicInfo.nzw:_*).withDefaultValue(0L)
+        val nz = new Array[Long](ntopics)
+        for((z, c) <- topicInfo.nz) nz(z) = c
+        val nmz = genNMZ(omwz, ntopics)
         val probz = new Array[Double](ntopics)
         for(r <- 1 to round) {
             for((mdoc, docmz) <- mwz zip nmz) {
@@ -80,7 +106,7 @@ object LDA {
                         nz(cz) -= 1
                     }
                     docmz(cz) -= 1
-                    for(z <- 0 until ntopics) probz(z) = ((nzw((z,cw))+beta)/(nz(z)+nterms*beta))*(docmz(z)+alpha)
+                    for(z <- 0 until ntopics) probz(z) = (nzw((z,cw))+beta)/(nz(z)+nterms*beta)*(docmz(z)+alpha)
                     val newz = MultiSampler.multisampling(probz)
                     mdoc(i) = (cw, newz)
                     if (inference == false) {
@@ -104,22 +130,23 @@ class ADLDAModel (
 {
 
     val minfo = new ModelInfo(ntopics, nterms)
-    var tinfo = LDA.topicInfo(this.data)
+    var tinfo = LDA.genTopicInfo(this.data)
+    var perplexity = LDA.perplexity(minfo, tinfo, data)
 
     def train(round:Int, innerRound:Int = 20) {
         this.data = if (this.data.partitions.size >= this.npartition) this.data else this.data.repartition(this.npartition)
         val minf = this.minfo
         @tailrec def loop(i:Int, mwz:LDA.LDADataRDD, tpinfo:TopicInfo):(LDA.LDADataRDD, TopicInfo) = {
-            println(s"Round:\t${i}")
+            println(s"Round:\t${i}\nPerplexity:\t${LDA.perplexity(minf, tpinfo, mwz)}")
             if(i == round) (mwz, tpinfo)
             else {
                 val tinfo = mwz.sparkContext broadcast tpinfo
                 val mwzNew = mwz.mapPartitions(
                         it=>LDA.gibbsMapper(minf, tinfo.value, it.toSeq, innerRound).toIterator, 
                                     preservesPartitioning=true)
-                    .persist(MEMORY_AND_DISK)
+                    .persist
                 mwzNew.checkpoint
-                val tpinfoNew = LDA.topicInfo(mwzNew)
+                val tpinfoNew = LDA.genTopicInfo(mwzNew)
                 mwz.unpersist(blocking=true)
                 loop(i+1, mwzNew, tpinfoNew)
             }
@@ -127,6 +154,8 @@ class ADLDAModel (
         val (x, y) = loop(1, this.data, this.tinfo)
         this.data = x
         this.tinfo = y
+        this.perplexity = LDA.perplexity(this.minfo, this.tinfo, this.data)
+        println(s"Final Perplexity:${this.perplexity}")
     }
 
     def inference(infer:LDA.LDADataRDD, round:Int = 20, npart:Int = 0) = {
@@ -136,5 +165,6 @@ class ADLDAModel (
         infer.mapPartitions(it=>LDA.gibbsMapper(minf, tinfo.value, it.toSeq, round, inference=true).toIterator, 
                                     preservesPartitioning=true)
     }
+
 }
 

@@ -30,7 +30,7 @@ object ADLDAJob {
                     .set("spark.akka.frameSize", "256")
                     .set("spark.kryo.registrator", "net.earthson.nlp.MyRegistrator")
                     .set("spark.default.parallelism", "32")
-                    .set("spark.cleaner.ttl", "180")
+                    .set("spark.cleaner.ttl", "300")
                     //.set("spark.executor.memory", "2g")
         val sc = new SparkContext(conf)
         sc.setCheckpointDir("hdfs://ns1/checkpoint_spark")
